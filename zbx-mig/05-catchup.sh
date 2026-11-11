@@ -3,6 +3,7 @@
 # Zabbix calisirken (kesintisiz) calistirilir; istenildigi kadar tekrarlanabilir (ON CONFLICT ile idempotent).
 # Canli MySQL'e sadece SELECT atar; yuk PARALLEL_ONLINE ile sinirlidir.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+need_prod
 init_workdir; start_log
 build_colmap prod
 

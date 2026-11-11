@@ -3,14 +3,11 @@
 # Yeni DB makinesinde (MySQL klonu, EL9/EL10) root olarak calistirilir. Tekrar calistirilabilir.
 #   ./01-install-postgres.sh          tam kurulum
 #   ./01-install-postgres.sh tune     sadece ayarlari yeniden yaz (VM'e RAM/CPU eklendikten sonra) + restart
+#   ./01-install-postgres.sh hba      sadece pg_hba.conf (config.env'e ZABBIX_SERVER_IP yazildiktan sonra) + reload
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 [[ $EUID == 0 ]] || die "root olarak calistirin"
-need PG_ZABBIX_PASSWORD PG_MIG_PASSWORD ZABBIX_SERVER_IP TSDB_VERSION
-init_workdir; start_log
-
-if ip -o addr | awk '{print $4}' | cut -d/ -f1 | grep -qxF "$PROD_MYSQL_HOST"; then
-  die "bu makine CANLI MySQL ($PROD_MYSQL_HOST) — kurulum sadece klonda yapilir"
-fi
+need PG_ZABBIX_PASSWORD PG_MIG_PASSWORD TSDB_VERSION
+init_workdir; start_log   # init_workdir: bu makine PROD_MYSQL_HOST ise durur
 
 EL=$(rpm -E '%{rhel}'); ARCH=$(uname -m)
 PGBIN=/usr/pgsql-$PG_VERSION/bin
@@ -71,9 +68,28 @@ CONF
   log "    shared_buffers=${sb}MB effective_cache_size=${ecs}MB max_connections=${PG_MAX_CONNECTIONS:-1000}"
 }
 
-if [[ ${1:-} == tune ]]; then
-  step "Ayarlar yeniden yaziliyor"; write_tuning; systemctl restart "$SVC"; log "tamam"; exit 0
-fi
+write_hba() {
+  local hba="$PGDATA/pg_hba.conf"
+  add_hba() { grep -qxF "$1" "$hba" || echo "$1" >> "$hba"; }
+  add_hba "# zbx-mig"
+  add_hba "host    all    $PG_MIG_USER    127.0.0.1/32    scram-sha-256"
+  if [[ -n $ZABBIX_SERVER_IP && $ZABBIX_SERVER_IP != DEGISTIR ]]; then
+    add_hba "host    $PG_DB    $PG_ZABBIX_USER    $ZABBIX_SERVER_IP/32    scram-sha-256"
+    log "    pg_hba: Zabbix server $ZABBIX_SERVER_IP icin erisim satiri var"
+  else
+    log "    pg_hba: ZABBIX_SERVER_IP bos — disaridan erisim acilmadi (gecisten once doldurup: $0 hba)"
+  fi
+}
+
+case ${1:-} in
+  tune) step "Ayarlar yeniden yaziliyor"; write_tuning; systemctl restart "$SVC"; log "tamam"; exit 0 ;;
+  hba)  step "pg_hba.conf"; write_hba; psu -d postgres -c "SELECT pg_reload_conf()" >/dev/null; log "tamam"; exit 0 ;;
+  "")   ;;
+  *)    die "kullanim: $0 [tune|hba]" ;;
+esac
+
+step "Guvenlik kontrolu"
+assert_clone_idle
 
 step "Saat senkronizasyonu (chrony)"
 dnf -y -q install chrony >/dev/null 2>&1 || true
@@ -124,11 +140,7 @@ fi
 
 step "postgresql.conf + pg_hba.conf"
 write_tuning
-hba="$PGDATA/pg_hba.conf"
-add_hba() { grep -qxF "$1" "$hba" || echo "$1" >> "$hba"; }
-add_hba "# zbx-mig"
-add_hba "host    $PG_DB    $PG_ZABBIX_USER    $ZABBIX_SERVER_IP/32    scram-sha-256"
-add_hba "host    all    $PG_MIG_USER    127.0.0.1/32    scram-sha-256"
+write_hba
 
 step "Servis"
 systemctl enable "$SVC" >/dev/null

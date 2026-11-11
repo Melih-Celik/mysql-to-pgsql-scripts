@@ -12,6 +12,7 @@ phase=$1 id=$2
 line=$(awk -F'\t' -v id="$id" '$1 == id { print; exit }' "$WORK_DIR/plan/$phase.tsv")
 [[ -n $line ]] || { echo "$id: plan satiri yok" >> "$WORK_DIR/log/failed-units.log"; exit 1; }
 IFS=$'\t' read -r _ tbl src mode where <<<"$line"
+[[ -r $WORK_DIR/my-$src.cnf ]] || { echo "$id: '$src' MySQL kaynagi tanimli degil" >> "$WORK_DIR/log/failed-units.log"; exit 1; }
 
 cols=$(tbl_cols "$tbl")
 sqlf="$WORK_DIR/units/$id.sql"

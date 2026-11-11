@@ -11,6 +11,7 @@
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 rehearsal=0; force=0
 for a in "$@"; do case $a in --rehearsal) rehearsal=1 ;; --force) force=1 ;; *) die "bilinmeyen arguman: $a" ;; esac; done
+need_prod
 init_workdir; start_log
 T0=$(date +%s); lap() { log "    [T+$(( $(date +%s) - T0 )) sn] $*"; }
 

@@ -107,8 +107,7 @@ kesinti 60 dakikanın altında kalır.
 7. **Test PostgreSQL'ine ikinci bir Zabbix server bağlanmamalı.** Aynı konfigürasyonla ikinci server
    çift bildirim gönderir ve proxy'lerle çakışır.
 8. **Klon VM canlı ile aynı hostname'i taşıyor** (`d724-zabbix-mysqldb`). Karışmaması için
-   `hostnamectl set-hostname` önerilir. Scriptler makinenin IP'si `PROD_MYSQL_HOST` ile aynıysa
-   çalışmayı reddeder.
+   `hostnamectl set-hostname` önerilir. Scriptlerin canlıya dokunmasını engelleyen kilitler 6.2'de.
 9. **Metin değerlerindeki NUL (0x00) karakteri** PostgreSQL'de saklanamaz, aktarımda atılır. Pratikte
    yalnızca bozuk log/text değerlerinde görülür.
 10. **Çevre bileşenler:** veritabanı izleme şablonu (MySQL → PostgreSQL by Zabbix agent 2), yedekleme
@@ -171,15 +170,31 @@ cd /root/zbx-mig && cp config.env.example config.env && chmod 600 config.env && 
 
 `config.env` içinde doldurulacaklar:
 
-- `CLONE_MYSQL_PASSWORD`, `PROD_MYSQL_PASSWORD`: Zabbix'in DB şifresi (`d724zbx01:/etc/zabbix/zabbix_server.conf` → `DBPassword`).
+- `CLONE_MYSQL_PASSWORD`: Zabbix'in DB şifresi (`d724zbx01:/etc/zabbix/zabbix_server.conf` → `DBPassword`).
   Klona `127.0.0.1` ile bağlanılamazsa `CLONE_MYSQL_HOST=localhost` deneyin (socket).
 - `PG_ZABBIX_PASSWORD`, `PG_MIG_PASSWORD`: yeni şifreler, örn. `openssl rand -hex 16`. Tek tırnak (`'`) içermesin.
-- `ZABBIX_SERVER_IP`, `PG_STORAGE_SSD`, gerekirse `HK_HISTORY` / `HK_TRENDS`.
+- `PG_STORAGE_SSD`, gerekirse `HK_HISTORY` / `HK_TRENDS`.
+- **`PROD_MYSQL_*` ve `ZABBIX_SERVER_IP` bu aşamada BOŞ kalır** (test modu). Kurulum, şema, toplu aktarım
+  ve klon doğrulaması canlıya ihtiyaç duymaz. Bu alanlar 6.5'te, ilk `05-catchup.sh` öncesinde doldurulur.
+
+**Canlıya dokunmama kilitleri** (hepsi konteyner ortamında denendi):
+
+| Kilit | Ne yapar |
+|---|---|
+| `PROD_MYSQL_HOST` boş (test modu) | Canlı için kimlik dosyası hiç yazılmaz; `05-catchup.sh`, `06-cutover.sh`, `07-verify.sh config\|delta` çalışmayı reddeder. Test boyunca canlı MySQL'e sıfır bağlantı gider. |
+| Adres kontrolü | `CLONE_MYSQL_HOST` ve `PG_HOST` bu makinenin kendi adresi değilse hiçbir script çalışmaz (yanlışlıkla canlı IP yazılamaz). `PROD_MYSQL_HOST` bu makinenin IP'siyse (script canlı makinede çalıştırılmışsa) durur. |
+| Canlı veritabanı algılama | Bu makinedeki MySQL'e bir Zabbix server yazıyorsa (`ha_node.lastaccess` son 2 dk içinde ya da değişiyor) `01`, `02`, `03`, `08` hiçbir şey yapmadan durur. |
+| Salt-okunur oturum | Scriptlerin açtığı her MySQL oturumu `transaction_read_only=ON` ile açılır; `INSERT/UPDATE/DELETE/DDL` sunucu tarafında reddedilir (klonda da canlıda da). |
+| Yazma hedefi | Bütün yazma/silme komutları yalnızca bu makinedeki PostgreSQL'e gider. |
+
+İsteğe bağlı ek kat (scriptlerden bağımsız, işletim sistemi düzeyinde): test süresince klondan canlıya
+giden trafiği tamamen kesmek için `ip route add blackhole 10.0.29.4/32` (kalıcı değildir; geri almak için
+`ip route del blackhole 10.0.29.4/32`, 6.5'ten önce kaldırılmalıdır).
 
 ### 6.3 Kurulum
 
 ```bash
-./00-preflight.sh          # [HATA] satırı kalmayana kadar düzeltin; PG_MAX_CONNECTIONS önerisini config.env'e yazın
+./00-preflight.sh          # [HATA] satırı kalmayana kadar düzeltin (test modunda yalnızca klonu kontrol eder)
 ./01-install-postgres.sh   # ~5 dk; chrony'yi de kurup başlatır (klonda NTP senkron değildi)
 chronyc tracking           # saat senkron mu
 ./02-create-schema.sh      # ~3 dk; sonunda "klon anı"nı yazar — doğru mu kontrol edin
@@ -205,8 +220,18 @@ eski chunk'lar sıkıştırılır; disk tepe kullanımı en büyük tablo (`hist
 ```bash
 ./07-verify.sh bulk        # tablo başına 300 örnek item: satır sayısı + sağlama toplamı, klon ile birebir olmalı
 ./07-verify.sh counts      # isteğe bağlı, uzun: tam satır sayıları
-./05-catchup.sh            # ilk geçiş uzun sürer (klonun yaşı kadar veri); mesai dışında çalıştırın
-./05-catchup.sh            # ikinci geçiş kısa; sonunda geçiş anı için süre tahmini yazar
+```
+
+Buraya kadar canlı sisteme hiç bağlanılmadı. Bundan sonraki adımlar canlı MySQL'den **okur** (yalnızca
+`SELECT`); başlamadan önce `config.env`'de `PROD_MYSQL_HOST=10.0.29.4`, `PROD_MYSQL_USER`,
+`PROD_MYSQL_PASSWORD` ve `ZABBIX_SERVER_IP` doldurulur (blackhole route eklendiyse kaldırılır):
+
+```bash
+./00-preflight.sh              # şimdi canlıyı da kontrol eder; PG_MAX_CONNECTIONS önerisini config.env'e yazın
+./01-install-postgres.sh hba   # Zabbix server'a pg_hba izni (reload; restart yok)
+./01-install-postgres.sh tune  # yalnızca PG_MAX_CONNECTIONS değiştiyse (PostgreSQL'i yeniden başlatır)
+./05-catchup.sh                # ilk geçiş uzun sürer (klonun yaşı kadar veri); mesai dışında çalıştırın
+./05-catchup.sh                # ikinci geçiş kısa; sonunda geçiş anı için süre tahmini yazar
 ```
 
 `05-catchup.sh` canlı MySQL'de aynı anda en fazla `PARALLEL_ONLINE` (2) sorgu çalıştırır, hepsi birincil
@@ -380,6 +405,11 @@ AlmaLinux 10 ve Oracle Linux 9) kurulan bir konteyner ortamında uçtan uca çal
 - Veri doğruluğu: 198 konfigürasyon tablosu birebir; ondalıklı değerler bit düzeyinde aynı (uç değerler
   dahil); sekme, satır sonu, ters bölü, emoji ve ikili veri içeren metinler aynı.
 - Aktarım ortasında MySQL bağlantısı kesildiğinde birimin geri alındığı ve yeniden denendiği.
+- Canlıya dokunmama kilitleri: test modunda (`PROD_MYSQL_*` boş) kurulum + şema + toplu aktarım +
+  doğrulama boyunca canlı MySQL'in bağlantı kaydında (general_log) klondan gelen sıfır bağlantı; yanlış
+  adres, canlı makinede çalıştırma ve "klon"a Zabbix yazması durumlarında scriptlerin durduğu; salt-okunur
+  oturumda her yazma/DDL denemesinin reddedildiği. Gerçek geçişin tamamında canlıya giden komutlar
+  yalnızca `SELECT` ve iki oturum ayarı (`SET SESSION transaction_read_only`, `net_write_timeout`).
 - Zabbix server'ın taşınan veritabanıyla açıldığı, TimescaleDB ve önceden sıkıştırılmış chunk'ları
   kabul ettiği, sıkıştırma işlerini kendisinin tanımladığı ve işlerin hatasız çalıştığı; frontend ve
   API'nin çalıştığı; yeni verinin PostgreSQL'e yazıldığı.

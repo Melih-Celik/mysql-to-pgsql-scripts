@@ -4,6 +4,7 @@
 #   ./03-bulk.sh [tablo ...]     (varsayilan: tum zaman serisi tablolari, buyukten kucuge)
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 init_workdir; start_log
+assert_clone_idle
 build_colmap clone
 
 [[ $(pgq "SELECT count(*) FROM zbxmig.watermark WHERE name = 'clone'") == 1 ]] || die "once 02-create-schema.sh calismali"

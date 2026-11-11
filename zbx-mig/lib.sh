@@ -22,6 +22,7 @@ source "$ZBXMIG_CONF"
 : "${PARALLEL_BULK:=4}" "${PARALLEL_ONLINE:=2}" "${PARALLEL_CUTOVER:=6}" "${BATCH_ITEMS:=500}"
 : "${OVERLAP:=10800}" "${CLONE_TS:=}" "${COMPRESS_INLINE:=1}" "${COMPRESS_PARALLEL:=2}"
 : "${HK_HISTORY:=}" "${HK_TRENDS:=}"
+: "${PROD_MYSQL_HOST:=}" "${PROD_MYSQL_USER:=}" "${PROD_MYSQL_PASSWORD:=}" "${ZABBIX_SERVER_IP:=}"
 (( OVERLAP >= 3600 && OVERLAP <= 5 * 86400 )) || die "OVERLAP 3600 ile 432000 sn arasinda olmali (sikistirilmis chunk'lara delta yazilmasin)"
 
 # Zaman serisi tablolari: toplu (klon) + delta (canli) ile tasinir. Sira = yukleme sirasi (buyukten kucuge).
@@ -56,20 +57,62 @@ conflict_clause() {
   esac
 }
 
+# --- Guvenlik: canli sisteme dokunmama garantileri -------------------------------------------------
+# 1) PROD_MYSQL_* bos ise (TEST MODU) my-prod.cnf hic yazilmaz; canliya baglanan adimlar calismayi reddeder.
+# 2) Klon MySQL ve PostgreSQL adresleri bu makinenin kendi adresi olmak zorundadir.
+# 3) Scriptlerin actigi her MySQL oturumu sunucu tarafinda salt-okunurdur (init-command).
+# 4) "Klon" MySQL'e canli bir Zabbix yaziyorsa (assert_clone_idle) scriptler durur.
+have_prod() { [[ -n $PROD_MYSQL_HOST && $PROD_MYSQL_HOST != DEGISTIR ]]; }
+need_prod() {
+  have_prod || die "bu adim CANLI MySQL'e baglanir; config.env'de PROD_MYSQL_HOST bos (TEST MODU) oldugu icin calistirilmadi"
+  need PROD_MYSQL_USER PROD_MYSQL_PASSWORD
+}
+local_ips() { ip -o addr 2>/dev/null | awk '{print $4}' | cut -d/ -f1; }
+is_local_host() {
+  case $1 in localhost|127.*|::1) return 0 ;; esac
+  local_ips | grep -qxF -- "$1"
+}
+
+# Klon MySQL'e calisan bir Zabbix server yaziyor mu? Calisan server ha_node.lastaccess'i 5 sn'de bir gunceller
+# (veritabani saatiyle). Yaziyorsa burasi klon degil CANLI veritabanidir -> hicbir sey yapmadan dur.
+assert_clone_idle() {
+  local q="SELECT COALESCE(MAX(lastaccess), 0), UNIX_TIMESTAMP() FROM ha_node" a b now
+  IFS=$'\t' read -r a now < <(my clone -e "$q") || die "klon MySQL'e baglanilamadi ($CLONE_MYSQL_HOST:$CLONE_MYSQL_PORT)"
+  [[ $a =~ ^[0-9]+$ && $now =~ ^[0-9]+$ ]] || die "klon MySQL'de ha_node okunamadi"
+  (( now - a > 120 )) ||
+    die "GUVENLIK: bu MySQL'e $(( now - a )) sn once bir Zabbix server yazmis — burasi klon degil CANLI veritabani gorunuyor. Hicbir islem yapilmadi."
+  sleep 6
+  IFS=$'\t' read -r b now < <(my clone -e "$q") || die "klon MySQL'e baglanilamadi"
+  [[ $a == "$b" ]] || die "GUVENLIK: ha_node.lastaccess degisiyor — bu MySQL'e calisan bir Zabbix server bagli (CANLI veritabani). Hicbir islem yapilmadi."
+  log "    guvenlik: bu makinedeki MySQL'e Zabbix yazmiyor (son yazma $(( (now - a) / 3600 )) saat once) — klon"
+}
+
 _write_mycnf() {  # ad host port user sifre
   local f="$WORK_DIR/my-$1.cnf" pw=${5//\\/\\\\}
   pw=${pw//\"/\\\"}
-  ( umask 077; printf '[client]\nhost=%s\nport=%s\nuser=%s\npassword="%s"\ndefault-character-set=utf8mb4\nconnect-timeout=10\n' \
+  # init-command: oturum salt-okunur acilir; INSERT/UPDATE/DELETE/DDL sunucu tarafinda reddedilir (ERROR 1792)
+  ( umask 077; printf '[client]\nhost=%s\nport=%s\nuser=%s\npassword="%s"\ndefault-character-set=utf8mb4\nconnect-timeout=10\ninit-command="SET SESSION transaction_read_only=ON"\n' \
       "$2" "$3" "$4" "$pw" > "$f" )
 }
 
 # Calisma dizini + istemci kimlik dosyalari. Her scriptin basinda bir kez cagrilir.
 init_workdir() {
-  need CLONE_MYSQL_HOST CLONE_MYSQL_USER CLONE_MYSQL_PASSWORD PROD_MYSQL_HOST PROD_MYSQL_USER PROD_MYSQL_PASSWORD PG_MIG_PASSWORD
+  need CLONE_MYSQL_HOST CLONE_MYSQL_USER CLONE_MYSQL_PASSWORD PG_MIG_PASSWORD
   [[ $WORK_DIR != *[[:space:]\']* ]] || die "WORK_DIR bosluk/tirnak iceremez: $WORK_DIR"
+  is_local_host "$CLONE_MYSQL_HOST" ||
+    die "GUVENLIK: CLONE_MYSQL_HOST ($CLONE_MYSQL_HOST) bu makinenin adresi degil — klon MySQL, scriptlerin calistigi makinede olmali (127.0.0.1)"
+  is_local_host "$PG_HOST" ||
+    die "GUVENLIK: PG_HOST ($PG_HOST) bu makinenin adresi degil — PostgreSQL, scriptlerin calistigi makinede olmali (127.0.0.1)"
   install -d -m 700 "$WORK_DIR" "$WORK_DIR/units" "$WORK_DIR/plan" "$WORK_DIR/log"
   _write_mycnf clone "$CLONE_MYSQL_HOST" "$CLONE_MYSQL_PORT" "$CLONE_MYSQL_USER" "$CLONE_MYSQL_PASSWORD"
-  _write_mycnf prod  "$PROD_MYSQL_HOST"  "$PROD_MYSQL_PORT"  "$PROD_MYSQL_USER"  "$PROD_MYSQL_PASSWORD"
+  if have_prod; then
+    need PROD_MYSQL_USER PROD_MYSQL_PASSWORD
+    ! is_local_host "$PROD_MYSQL_HOST" ||
+      die "GUVENLIK: bu makine CANLI MySQL ($PROD_MYSQL_HOST) — scriptler sadece klonda calisir"
+    _write_mycnf prod "$PROD_MYSQL_HOST" "$PROD_MYSQL_PORT" "$PROD_MYSQL_USER" "$PROD_MYSQL_PASSWORD"
+  else
+    rm -f "$WORK_DIR/my-prod.cnf"
+  fi
   local pw=${PG_MIG_PASSWORD//\\/\\\\}
   ( umask 077; printf '%s:%s:*:%s:%s\n' "$PG_HOST" "$PG_PORT" "$PG_MIG_USER" "${pw//:/\\:}" > "$WORK_DIR/pgpass" )
   use_workdir
@@ -88,10 +131,16 @@ start_log() {
   f="$WORK_DIR/log/$(basename "$0" .sh)-$(date +%Y%m%d-%H%M%S).log"
   exec > >(tee -a "$f") 2>&1
   log "log: $f"
+  if have_prod; then log "kaynaklar: klon MySQL $CLONE_MYSQL_HOST (bu makine) | canli MySQL $PROD_MYSQL_HOST (sadece SELECT)"
+  else log "TEST MODU: canli MySQL tanimli degil — sadece bu makinedeki MySQL ($CLONE_MYSQL_HOST) ve PostgreSQL ($PG_HOST) kullanilir"; fi
 }
 
 # my <clone|prod> [mysql argumanlari]  — sekmeyle ayrilmis, basliksiz, ham cikti
-my()     { mysql --defaults-extra-file="$WORK_DIR/my-$1.cnf" --batch --skip-column-names --raw "${@:2}" "$MYSQL_DB"; }
+# Kimlik dosyasi yoksa (TEST MODU'nda my-prod.cnf) baglanti denenmez.
+my() {
+  [[ -r $WORK_DIR/my-$1.cnf ]] || { echo "HATA: '$1' MySQL kaynagi tanimli degil (TEST MODU'nda canliya baglanilmaz)" >&2; return 1; }
+  mysql --defaults-extra-file="$WORK_DIR/my-$1.cnf" --batch --skip-column-names --raw "${@:2}" "$MYSQL_DB"
+}
 my_cmd() { echo "mysql --defaults-extra-file=$WORK_DIR/my-$1.cnf --batch --skip-column-names --raw --quick $MYSQL_DB"; }
 pg()     { psql -X -q -v ON_ERROR_STOP=1 "$@"; }
 # psu: yerel "postgres" isletim sistemi kullanicisi ile (peer auth) — rol/veritabani olusturma ve temizlik icin

@@ -4,6 +4,7 @@
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 need ZABBIX_VERSION PG_ZABBIX_USER
 init_workdir; start_log
+assert_clone_idle
 
 SQL_DIR=${SQL_SCRIPTS_DIR:-/usr/share/zabbix/sql-scripts/postgresql}
 if [[ ! -s $SQL_DIR/server.sql.gz ]]; then

@@ -9,21 +9,25 @@ ok()  { log "  [OK]    $*"; }
 inf() { log "  [BILGI] $*"; }
 
 step "Bu makine canli MySQL olmamali"
-if ip -o addr 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -qxF "$PROD_MYSQL_HOST"; then
-  bad "bu makinenin IP'si PROD_MYSQL_HOST ($PROD_MYSQL_HOST) ile ayni — scriptler KLON uzerinde calismali"
+inf "bu makine: $(hostname) — $(local_ips | grep -v -e '^127\.' -e ':' | tr '\n' ' ')"
+if have_prod; then
+  srcs="clone prod"
+  ok "yerel IP'ler arasinda PROD_MYSQL_HOST ($PROD_MYSQL_HOST) yok"   # aksi halde init_workdir durdururdu
 else
-  ok "yerel IP'ler arasinda $PROD_MYSQL_HOST yok"
+  srcs="clone"
+  inf "TEST MODU: PROD_MYSQL_HOST bos — canli MySQL'e BAGLANILMADI, canli kontrolleri atlandi"
 fi
+( assert_clone_idle ) || rc=1
 
 step "MySQL baglantilari"
-for s in clone prod; do
+for s in $srcs; do
   if v=$(my "$s" -e "SELECT CONCAT(@@version, ' / dbversion ', (SELECT CONCAT(mandatory, '-', optional) FROM dbversion))" 2>&1); then
     ok "$s: $v"; eval "ver_$s=\$v"
   else
     bad "$s: baglanamadi: $v"
   fi
 done
-[[ ${ver_clone:-x} == "${ver_prod:-y}" ]] || bad "klon ve canli MySQL/Zabbix surumleri farkli"
+! have_prod || [[ ${ver_clone:-x} == "${ver_prod:-y}" ]] || bad "klon ve canli MySQL/Zabbix surumleri farkli"
 
 if [[ -n ${ver_prod:-} ]]; then
   step "Canli sistem: baglanti sayisi (PG_MAX_CONNECTIONS icin)"

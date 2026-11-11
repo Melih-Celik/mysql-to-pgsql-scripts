@@ -10,6 +10,9 @@ init_workdir
 PGBIN=/usr/pgsql-$PG_VERSION/bin; PGDATA=${PGDATA_DIR:-/var/lib/pgsql/$PG_VERSION/data}
 
 [[ $(pgq "SELECT value_str FROM settings WHERE name = 'db_extension'") == timescaledb ]] || die "gecis tamamlanmamis gorunuyor (settings.db_extension)"
+[[ $(pgq "SELECT count(*) FROM zbxmig.watermark WHERE name LIKE 'cut2%'") -ge 1 ]] || die "gecis (06-cutover.sh) yapilmamis — temizlik calistirilmadi"
+# Durdurulacak MySQL bu makinedeki KLON olmali: ona hala bir Zabbix yaziyorsa dur
+if my clone -e "SELECT 1" >/dev/null 2>&1; then assert_clone_idle; fi
 step "zbxmig semasi ve rolu siliniyor"
 psu -d "$PG_DB" -c "DROP SCHEMA IF EXISTS zbxmig CASCADE"
 psu -d postgres -c "DROP ROLE IF EXISTS \"$PG_MIG_USER\""

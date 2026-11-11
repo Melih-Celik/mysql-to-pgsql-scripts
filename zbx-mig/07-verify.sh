@@ -45,6 +45,7 @@ schema)
   ;;
 
 config)
+  need_prod
   [[ -s $WORK_DIR/colmap.tsv ]] || build_colmap prod
   one() {  # tablo
     local t=$1 me pe a b
@@ -65,6 +66,7 @@ bulk|delta)
   split=$(( clone_ts - OVERLAP ))
   if [[ $mode == bulk ]]; then src=clone; lo=0; hi=$split
   else
+    need_prod
     src=prod; lo=$split; hi=$(last_watermark)
     (( hi > clone_ts )) || die "henuz delta gecisi yapilmamis"
   fi
