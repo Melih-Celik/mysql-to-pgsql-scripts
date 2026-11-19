@@ -44,7 +44,7 @@ Veri hacmi bir kesinti penceresine sığmayacak kadar büyük olduğu için geç
 
 | Aşama | Ne yapılır | Süre | Kesinti |
 |---|---|---|---|
-| 1. Toplu aktarım | Veritabanı sunucusunun klonu üzerinde tüm geçmiş veri PostgreSQL'e aktarılır. Canlı sisteme yük binmez. | 6–16 saat (arka planda) | Yok |
+| 1. Toplu aktarım | Veritabanı sunucusunun klonu üzerinde tüm geçmiş veri PostgreSQL'e aktarılır. Canlı sisteme yük binmez. | Yaklaşık 2 saat (arka planda; testte ölçüldü) | Yok |
 | 2. Yakalama | Klonun alındığı andan sonra biriken veri canlı veritabanından yalnızca okunarak eklenir. Geçiş gününe kadar tekrarlanır. | Her seferinde 5–40 dk | Yok |
 | 3. Geçiş | Zabbix durdurulur, son birkaç dakikanın verisi ve güncel konfigürasyon aktarılır, doğrulanır, Zabbix yeni veritabanıyla açılır. | 30–40 dk | **Var** |
 

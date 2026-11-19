@@ -14,14 +14,15 @@ pgq "SELECT CASE WHEN phase LIKE 'bulk.%' THEN phase ELSE phase || ' (' || count
 echo; echo "== Toplu aktarim tahmini (veri boyutuna gore agirlikli)"
 # Tablo agirliklari: klon MySQL'deki veri boyutu. Ilerleme: tamamlanan birim orani (birimler itemid araligi; kabaca esit).
 w=$(my clone -e "SELECT table_name, data_length FROM information_schema.tables WHERE table_schema = DATABASE()
-                  AND table_name IN ('$(IFS=,; echo "${HIST_TABLES[*]}" | sed "s/,/','/g")', '$AUDIT_TABLE')")
-pgq "SELECT tbl, count(*) FILTER (WHERE status = 'done'), count(*), COALESCE(extract(epoch FROM min(started)), 0), COALESCE(extract(epoch FROM max(finished)), 0)
+                  AND table_name IN ('$(IFS=,; echo "${HIST_TABLES[*]}" | sed "s/,/','/g")', '$AUDIT_TABLE')" 2>/dev/null) || w=
+[[ -n $w ]] || echo "klon MySQL kapali — tahmin hesaplanamadi (toplu aktarim bittiyse onemsiz)"
+[[ -z $w ]] || pgq "SELECT tbl, count(*) FILTER (WHERE status = 'done'), count(*), COALESCE(extract(epoch FROM min(started)), 0), COALESCE(extract(epoch FROM max(finished)), 0)
        FROM zbxmig.progress WHERE phase LIKE 'bulk.%' GROUP BY tbl" |
 awk -F'\t' -v now="$(date +%s)" 'NR == FNR { sz[$1] = $2; tot += $2; next }
-     { d[$1] = $2 / $3; if ($4 > 0 && (t0 == 0 || $4 < t0)) t0 = $4 }
+     { d[$1] = $2 / $3; if ($4 > 0 && (t0 == 0 || $4 < t0)) t0 = $4; if ($5 > t1) t1 = $5 }
      END { for (t in sz) done += sz[t] * d[t]
            if (tot == 0 || t0 == 0) { print "henuz baslamadi"; exit }
-           p = done / tot; el = now - t0
+           p = done / tot; el = (p >= 1 ? t1 : now) - t0   # bittiyse: son birimin bitis ani
            printf "ilerleme: %%%.1f  (%.1f / %.1f GB kaynak veri), gecen sure: %.1f saat", p * 100, done / 2^30, tot / 2^30, el / 3600
            if (p > 0.01 && p < 1) printf ", kalan (tahmini): %.1f saat", el * (1 - p) / p / 3600
            print "" }' <(echo "$w") -

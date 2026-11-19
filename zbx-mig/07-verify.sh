@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Dogrulama (salt-okunur).
-#   ./07-verify.sh schema   MySQL <-> PostgreSQL tablo/kolon listesi ayni mi
+#   ./07-verify.sh schema   MySQL <-> PostgreSQL tablo/kolon listesi ayni mi (canli tanimliysa canli, degilse klon)
 #   ./07-verify.sh config   konfigurasyon tablolari: CANLI ile satir sayisi + kolon bazinda saglama toplami (Zabbix kapaliyken birebir)
 #   ./07-verify.sh bulk     history/trends: KLON ile ornek item'lar uzerinden satir sayisi + saglama (klon anina kadar)
 #   ./07-verify.sh delta    history/trends: CANLI ile ornek item'lar uzerinden (klon anindan son gecise kadar)
@@ -34,7 +34,8 @@ sum_exprs() {  # src(clone|prod) tablo  -> "mysql ifadeleri <TAB> pg ifadeleri"
 
 case $mode in
 schema)
-  my clone -e "SELECT CONCAT(table_name, '.', column_name) FROM information_schema.columns WHERE table_schema = DATABASE() ORDER BY 1" | LC_ALL=C sort > "$V/schema.mysql"
+  src=clone; have_prod && src=prod   # gecis asamasinda kaynak canli; klon MySQL kapatilmis olabilir
+  my "$src" -e "SELECT CONCAT(table_name, '.', column_name) FROM information_schema.columns WHERE table_schema = DATABASE() ORDER BY 1" | LC_ALL=C sort > "$V/schema.mysql"
   pgq "SELECT table_name || '.' || column_name FROM information_schema.columns WHERE table_schema = 'public' ORDER BY 1" | LC_ALL=C sort > "$V/schema.pg"
   if diff "$V/schema.mysql" "$V/schema.pg" > "$V/schema.diff"; then
     log "    sema ayni: $(wc -l < "$V/schema.pg" | tr -d ' ') kolon, $(cut -d. -f1 "$V/schema.pg" | sort -u | wc -l | tr -d ' ') tablo"

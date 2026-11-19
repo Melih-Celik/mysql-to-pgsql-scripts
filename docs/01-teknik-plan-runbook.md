@@ -36,8 +36,8 @@ teyit edilecek.
 |---|---|---|
 | Hazırlık: dosyalar, `config.env`, ön kontrol, klon ayarları | 30–45 dk | Yok |
 | PostgreSQL + TimescaleDB kurulumu, boş şema | 10–15 dk | Yok |
-| Faz 1 toplu aktarım (236 GB) + sıkıştırma | 6–16 saat, arka planda (gece) | Yok |
-| Toplu aktarım doğrulaması (örneklem) | 10–30 dk | Yok |
+| Faz 1 toplu aktarım (236 GB) + sıkıştırma | **1 saat 45 dk — ölçüldü** (12.11.2026, test klonu, 4 vCPU / 23 GB; 1,92 milyar satır, PostgreSQL'de 92 GB). İlk tahmin 6–16 saatti. | Yok |
+| Toplu aktarım doğrulaması (örneklem) | **1,5 dk — ölçüldü**, tüm tablolar birebir | Yok |
 | İlk yakalama | klonun yaşı × 20–40 dk/gün | Yok (canlıda 2 okuma bağlantısı) |
 | Sonraki yakalamalar | 5–20 dk | Yok |
 | Geçiş provası (`--rehearsal`) | 8–15 dk | Yok |
